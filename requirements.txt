@@ -1,0 +1,9 @@
+pygetwindow
+rich
+pywin32
+pyautogui
+imageio
+PIL
+opencv-python
+numpy
+numba
