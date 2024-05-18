@@ -7,3 +7,4 @@ PIL
 opencv-python
 numpy
 numba
+mouse
