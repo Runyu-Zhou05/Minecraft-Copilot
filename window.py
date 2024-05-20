@@ -8,6 +8,7 @@ import ctypes
 import numpy as np
 from typing import Union, List
 
+
 my_dpi_awareness_context = None
 
 def get_minecraft_window() -> pygetwindow.Win32Window:
@@ -43,7 +44,7 @@ def get_minecraft_window() -> pygetwindow.Win32Window:
             'Minecraft.')
 
 def adjust_window(w: pygetwindow.Win32Window, x=0, y=0,
-    width=1280, height=720, interval=0.002):
+    width=1280, height=720, interval=0.002, show_info=True):
     w.activate()
     while not w.isActive:
         time.sleep(interval)
@@ -55,9 +56,10 @@ def adjust_window(w: pygetwindow.Win32Window, x=0, y=0,
     w.resizeTo(width, height)
     while w.width != width or w.height != height:
         time.sleep(interval)
-    
-    logger.info(f'Moved window to ({x}, {y}) and '
-        f'resized to ({width}, {height}).')
+
+    if show_info:
+        logger.info(f'Moved window to ({x}, {y}) and '
+            f'resized to ({width}, {height}).')
 
 def capture_window(w: pygetwindow.Win32Window, interval=0.01, regions='all') -> \
     Union[np.ndarray, List[np.ndarray]]:
@@ -96,14 +98,20 @@ def capture_window(w: pygetwindow.Win32Window, interval=0.01, regions='all') -> 
     client_rect = win32gui.GetClientRect(hwnd)
     region_list = []
     results = []
+    delta_x = client_x - w.left
+    delta_y = client_y - w.top
+    cwidth = client_rect[2] - client_rect[0] # c = client
+    cheight = client_rect[3] - client_rect[1]
     if regions == 'all':
-        width = client_rect[2] - client_rect[0]
-        height = client_rect[3] - client_rect[1]
         region_list.append(
-            ((client_x - w.left, client_y - w.top), (width, height)))
+            ((delta_x, delta_y), (cwidth, cheight)))
     else:
         for x, y, width, height in regions:
-            region_list.append((x, y), (width, height))
+            region_list.append(((x + delta_x, y + delta_y),
+                (
+                    min(width, cwidth - x),
+                    min(height, cheight - y)
+                )))
     for coordinate, size in region_list:
         bitmap.CreateCompatibleBitmap(dcObj, *size)
         cDC.SelectObject(bitmap)
@@ -113,7 +121,7 @@ def capture_window(w: pygetwindow.Win32Window, interval=0.01, regions='all') -> 
         bits = bitmap.GetBitmapBits(True)
         ## time_stamps.append(['GetBitmapBits', time.time_ns()])
         image = np.frombuffer(bits, dtype=np.uint8) \
-            .reshape(height, width, 4)[:, :, np.array([2, 1, 0])]
+            .reshape(size[1], size[0], 4)[:, :, np.array([2, 1, 0])]
             # discard alpha channel
         ## time_stamps.append(['frombuffer', time.time_ns()])
         results.append(image)
@@ -140,21 +148,22 @@ def capture_window(w: pygetwindow.Win32Window, interval=0.01, regions='all') -> 
     if regions == 'all':
         return results[0]
     else:
-        return image
+        return results
 
-w = get_minecraft_window()
-adjust_window(w)
-time.sleep(1)
-w.activate()
-before = time.time_ns()
-img = capture_window(w)
-after = time.time_ns()
-print('capture_window used time (ms):', (after - before) / 1e6, 'ms')
-import imageio.v3 as iio
-iio.imwrite('./text_helper/world_border.png', img)
-# for i in range(30):
-#     import os
-#     os.makedirs('./blue_ice_boat', exist_ok=True)
-#     img = capture_window(w)
-#     iio.imwrite(f'./blue_ice_boat/{i}.png', img)
-#     time.sleep(1)
+if __name__ == '__main__':
+    w = get_minecraft_window()
+    adjust_window(w)
+    time.sleep(1)
+    w.activate()
+    before = time.time_ns()
+    img = capture_window(w)
+    after = time.time_ns()
+    print('capture_window used time (ms):', (after - before) / 1e6, 'ms')
+    import imageio.v3 as iio
+    iio.imwrite('./text_helper/world_border.png', img)
+    # for i in range(30):
+    #     import os
+    #     os.makedirs('./blue_ice_boat', exist_ok=True)
+    #     img = capture_window(w)
+    #     iio.imwrite(f'./blue_ice_boat/{i}.png', img)
+    #     time.sleep(1)

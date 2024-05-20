@@ -1,6 +1,10 @@
 import rich
 import sys
 
+
+def done():
+    rich.print('Done.')
+
 def info(*args, **kwargs):
     rich.print(f'[cyan]{sys.argv[0]}[/cyan]:', *args, **kwargs)
 
