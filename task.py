@@ -9,6 +9,8 @@ class LineBuildingTask(NamedTuple):
     y_inc: int = 0
         # (for face = 'front' or 'bottom') y coordinate of the placed blocks
         # relative to the player's feet
+    sneak: bool = False
+        # sneaking when building
 
 class AreaBuildingTask(NamedTuple):
     y: int

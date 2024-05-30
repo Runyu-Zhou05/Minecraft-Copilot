@@ -160,7 +160,7 @@ class TextExtractor:
                     self.scaled_symbols[k] = scale_image(v, scale)
                 return scale, results
         return None
-    
+
     def preprocess(self, img: np.ndarray,
         location: Tuple[int, int]=None,
         size: Tuple[int, int]=None,

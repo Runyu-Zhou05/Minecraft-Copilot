@@ -37,6 +37,18 @@ def start_moving_backward():
 def stop_moving_backward():
     pyautogui.keyUp('s')
 
+def start_strafing_left():
+    pyautogui.keyDown('a')
+
+def stop_strafing_left():
+    pyautogui.keyUp('a')
+
+def start_strafing_right():
+    pyautogui.keyDown('d')
+
+def stop_strafing_right():
+    pyautogui.keyUp('d')
+
 def start_shift():
     pyautogui.keyDown('shift')
 

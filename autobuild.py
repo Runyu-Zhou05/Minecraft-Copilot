@@ -3,7 +3,6 @@ from pygetwindow import Win32Window
 from window import adjust_window, capture_window
 from text import TextExtractor, match_template, scale_image
 from utils import (
-    SNEAKING_SPEED,
     extract_args,
     mouse_move_rel,
     clip_value,
@@ -11,6 +10,10 @@ from utils import (
     stop_moving_forward,
     start_moving_backward,
     stop_moving_backward,
+    start_strafing_left,
+    stop_strafing_left,
+    start_strafing_right,
+    stop_strafing_right,
     start_shift,
     stop_shift
 )
@@ -80,7 +83,6 @@ class AutoBuilder:
         self.max_mouse_speed = args.get('max_mouse_speed', 10000) # default: unlimited
         self.allow_sprint = args.get('allow_sprint', True)
         self.back = args.get('back', 2) # stand how many blocks behind the targeted block
-        self.sneak = args.get('sneak', False) # whether sneaking when building
         '''
         self.xyz = (x, y, z)
         self.direction = (yaw, pitch)
@@ -93,7 +95,6 @@ class AutoBuilder:
         self.amr_calibrated = False
             # whether self.angle_mm_ratio has been calibrated
 
-
     def reset(self):
         self.interrupted.clear() # whether user pressed interrupt hotkey
         self.xyz = None
@@ -105,9 +106,11 @@ class AutoBuilder:
         self.hotkey_thread = None
         self.amr_calibrated = False
         self.require_targeted_block = False
+        self.is_idle = True
 
     def set_interrupted(self):
-        logger.error('[purple]AutoBuilder[/purple]: Interrupt signal received.')
+        logger.error('[purple]AutoBuilder[/purple]: '
+            '[yellow]Interrupt signal received.[/yellow]')
         self.interrupted.set()
         self.hotkey_thread.stop()
 
@@ -275,6 +278,9 @@ class AutoBuilder:
     @staticmethod
     def translate_block(x: int, y: int, z: int, face: str,
         xs: int, zs: int, xe: int, ze: int) -> Tuple[int, int, int]:
+        '''
+        To place block (x, y, z), which block should we target at?
+        '''
         x1, y1, z1 = None, None, None
         if face == 'top':
             x1 = x
@@ -301,14 +307,20 @@ class AutoBuilder:
         return x1, y1, z1
 
     def search_pitch(self, x_target, y_target, z_target,
-        yaw: float, face: str, xdiff: bool):
+        yaw: float, face: str, xdiff: bool, sneaking: bool=False):
         '''
         xdiff:
             True: the player is looking along the x axis.
             False: the player is looking along the z axis.
         '''
+        logger.info(f'Trying to target at block '
+            f'{(x_target, y_target, z_target)}...')
         PLAYER_EYE_LEVEL = 1.62 # see https://minecraft.wiki/w/Player#Trivia
+        if sneaking:
+            PLAYER_EYE_LEVEL -= 0.3
 
+        # First, we guess the pitch from the default eye level of the player
+        # and where the player should look at.
         x0, y0, z0 = self.xyz
         yp = y0 + PLAYER_EYE_LEVEL
         xf, yf, zf = x_target, y_target, z_target # should focus on which position
@@ -341,6 +353,9 @@ class AutoBuilder:
         for _ in range(4):
             yield None # wait longer, prevent lag
         self.require_targeted_block = False
+
+        # If we cannot target at the desired block this way, we do exhaustive
+        # search over the pitch, by halving the increment value step by step.
         if self.targeted_block != (x_target, y_target, z_target):
             # do exhaustive search
             logger.info(f'self.targeted_block = {self.targeted_block}, != '
@@ -374,36 +389,44 @@ class AutoBuilder:
         '''
         logger.info(f'Moving to ({x:.3f}, {y:.5f}, {z:.3f})...')
         self.require_targeted_block = False
-        start_moving_forward(sprint=self.allow_sprint, interval=self.interval)
         is_sneaking = False
 
+        # First, we do coarse adjustment by running/walking.
         coarse_eps = 5 * epsilon
-        while abs(self.xyz[0] - x) > coarse_eps or \
+        if abs(self.xyz[0] - x) > coarse_eps or \
             abs(self.xyz[1] - y) > coarse_eps or \
             abs(self.xyz[2] - z) > coarse_eps:
-            yaw = self.get_yaw(x, z, self.xyz[0], self.xyz[2])
-            if yaw is None:
-                break
-            if abs(yaw - self.direction[0]) > yaw_tol:
-                stop_moving_forward() # when turning, stop moving
-                for _ in range(3):
-                    yield # wait longer
-                for step in self.turn_to(yaw, self.direction[1]):
-                    yield
-                start_moving_forward(sprint=self.allow_sprint and \
-                    not is_sneaking, interval=self.interval)
-                continue
-            if not is_sneaking and \
-                math.hypot(x - self.xyz[0], y - self.xyz[1], z - self.xyz[2]) < 1.5:
-                # start sneaking
-                is_sneaking = True
-                start_shift()
-                continue
-            yield
-        stop_moving_forward() # but shift may still be pressed (or must be?)
+            logger.info('move_to: Start coarse adjustment...')
+            start_moving_forward(sprint=self.allow_sprint,
+                interval=self.interval)
+            while abs(self.xyz[0] - x) > coarse_eps or \
+                abs(self.xyz[1] - y) > coarse_eps or \
+                abs(self.xyz[2] - z) > coarse_eps:
+                yaw = self.get_yaw(x, z, self.xyz[0], self.xyz[2])
+                if yaw is None:
+                    break
+                if abs(yaw - self.direction[0]) > yaw_tol:
+                    stop_moving_forward() # when turning, stop moving
+                    for _ in range(3):
+                        yield # wait longer
+                    for step in self.turn_to(yaw, self.direction[1]):
+                        yield
+                    start_moving_forward(sprint=self.allow_sprint and \
+                        not is_sneaking, interval=self.interval)
+                    continue
+                if not is_sneaking and math.hypot(
+                        x - self.xyz[0], y - self.xyz[1], z - self.xyz[2]
+                    ) < epsilon:
+                    # start sneaking
+                    is_sneaking = True
+                    start_shift()
+                    continue
+                yield
+            stop_moving_forward() # but shift may still be pressed (or must be?)
 
+        # Next, we do fine adjustment by sneaking for a very short period.
         FINE_ADJUSTMENT_SLEEPING_PERIOD = 0.01
-        logger.info('Start fine adjustment...')
+        logger.info('move_to: Start fine adjustment...')
         do_sleep = True
         while abs(self.xyz[0] - x) > epsilon or \
             abs(self.xyz[1] - y) > epsilon or \
@@ -431,7 +454,7 @@ class AutoBuilder:
             stop_shift()
         logger.info('Moving done.')
 
-    def build_line(self, task: LineBuildingTask):
+    def build_line(self, task: LineBuildingTask, epsilon=0.3):
         if task.face not in ['top', 'bottom', 'front']:
             logger.error('[purple]build_line[/purple]: Invalid face name.')
             return
@@ -461,7 +484,7 @@ class AutoBuilder:
         pitch = 0.
         for step in self.turn_to(yaw, pitch):
             yield
-        for step in self.move_to(x1, y1, z1):
+        for step in self.move_to(x1, y1, z1, epsilon=epsilon):
             yield
 
         ###### STAGE II: SEARCHING FOR A GOOD ORIENTATION ######
@@ -478,13 +501,18 @@ class AutoBuilder:
             xs, zs, xe, ze)
         pitch = None
         xdiff = xe != xs
-        for step in self.search_pitch(xt, yt, zt, yaw, task.face, xdiff):
+        if task.sneak:
+            start_shift()
+            time.sleep(1)
+        for step in self.search_pitch(
+            xt, yt, zt, yaw, task.face, xdiff, sneaking=task.sneak):
             if step is not None:
                 pitch = step
             yield
 
-        ###### STAGE III: START BUILDING ######
+        ###### STAGE III: DO BUILDING ######
         cur_target_block = xs, ys, zs
+        last_targeted_block = None
 
         def finished():
             nonlocal cur_target_block
@@ -510,30 +538,54 @@ class AutoBuilder:
                 zc -= 1 + task.spacing
             cur_target_block = xc, yc, zc
 
-        if self.sneak:
-            start_shift()
-        n_placed = 0
+        n_placed = 0 # number of blocks placed.
         start_moving_backward()
         while not finished():
-            xt, yt, zt = self.translate_block(*cur_target_block,
+            xc, yc, zc = cur_target_block
+            xt, yt, zt = self.translate_block(xc, yc, zc,
                 task.face, xs, zs, xe, ze)
+            last_targeted_block = xt, yt, zt
             self.require_targeted_block = True
             while self.targeted_block != (xt, yt, zt):
                 yield
+                xu, zu = self.targeted_block[0], self.targeted_block[2]
+                if (xe > xs and xu > xt) or (xe < xs and xu < xt) or \
+                    (ze > zs and zu > zt) or (ze < zs and zu < zt) or \
+                    (xe != xs and abs(zu - zt) > epsilon) or \
+                    (ze != zs and abs(xu - xt) > epsilon):
+                    # missed the block, or deviate too much horizontally
+                    stop_moving_backward()
+                    xp, yp, zp = (
+                        xc + lv_normed[0] * self.back + .5,
+                        yc,
+                        zc + lv_normed[2] * self.back + .5
+                    )
+                    if task.face != 'top':
+                        yp -= task.y_inc
+                    for step in self.move_to(
+                        xp, yp, zp, epsilon=epsilon):
+                        yield
+                    for step in self.turn_to(yaw, pitch):
+                        yield
+                    start_moving_backward()
             self.require_targeted_block = False
             pyautogui.rightClick()
             n_placed += 1
-            if n_placed % 32 == 0:
+            if n_placed % 64 == 0:
                 stop_moving_backward()
                 start_moving_forward()
-                time.sleep(0.2)
+                while self.targeted_block != last_targeted_block:
+                    yield
                 stop_moving_forward()
                 pyautogui.middleClick()
+                time.sleep(0.5)
                 start_moving_backward()
             next_target_block()
         stop_moving_backward()
-        if self.sneak:
+        if task.sneak:
             stop_shift()
+        logger.info(f'Task of building line accomplished; placed '
+            f'{n_placed} blocks.')
 
     def build_area(self, task: AreaBuildingTask):
         pass
@@ -544,8 +596,10 @@ class AutoBuilder:
         '''
         while True:
             if self.task_queue.empty():
+                self.is_idle = True
                 yield
             else:
+                self.is_idle = False
                 task = self.task_queue.get()
                 if isinstance(task, LineBuildingTask):
                     for step in self.build_line(task):
@@ -555,6 +609,9 @@ class AutoBuilder:
                         yield
 
     async def operate(self, fsm): # fsm: generator
+        '''
+        A single step.
+        '''
         try:
             time_stamps = [time.time_ns()]
             regions = capture_window(self.w,
@@ -594,9 +651,11 @@ class AutoBuilder:
         while not self.interrupted.is_set():
             try:
                 time_before = time.perf_counter_ns()
-                operate_task = asyncio.create_task(self.operate(fsm))
-                # sleep_task = asyncio.create_task(asyncio.sleep(self.gap / 1000))
-                await operate_task
+                if not self.is_idle or not self.task_queue.empty():
+                    operate_task = asyncio.create_task(self.operate(fsm))
+                    # sleep_task = asyncio.create_task(
+                    #     asyncio.sleep(self.gap / 1000))
+                    await operate_task
                 time_operate = time.perf_counter_ns()
                 sleep_interval = \
                     (self.gap - (time_operate - time_before) / 1e6) / 1e3
